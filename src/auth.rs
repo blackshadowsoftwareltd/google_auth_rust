@@ -6,7 +6,6 @@ use axum::{
     routing::get,
     Router,
 };
-use dotenv::dotenv;
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
     ClientSecret, CsrfToken, RedirectUrl, Scope, TokenResponse, TokenUrl,
@@ -17,25 +16,17 @@ use tokio::{
 };
 use url::Url;
 
-const CLIENT_ID_ENV_KEY: &str = "GOOGLE_OAUTH_CLIENT_ID";
-const CLIENT_SECRET_ENV_KEY: &str = "GOOGLE_OAUTH_CLIENT_SECRET";
 const BASE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://www.googleapis.com/oauth2/v3/token";
-const HOST_URL: &str = "localhost:3000";
-const REDIRECT_ROUTE: &str = "/auth/google_callback";
 
-pub fn get_oauth_token() -> Result<String> {
-    dotenv().ok();
-    let client_id = std::env::var(CLIENT_ID_ENV_KEY)?;
-    let client_secret = std::env::var(CLIENT_SECRET_ENV_KEY)?;
-    let redirect_url = format!("http://{}{}", HOST_URL, REDIRECT_ROUTE); // http://localhost:3000/auth/google_callback (this url is set in google cloude console)
+pub fn get_oauth_token(client_id: &str, client_secret: &str, redirect_uri: &str) -> Result<String> {
     let scopes = vec!["openid", "email", "profile"];
-    let client = build_auth_client(&client_id, &client_secret, &redirect_url)?;
+    let client = build_auth_client(&client_id, &client_secret, &redirect_uri)?;
     let (auth_url, csrf_token) = get_auth_url(&client, scopes);
     // println!("CSRF token : {:?}", csrf_token.secret());
     println!("Open this URL in your browser: {}", auth_url);
     webbrowser::open(&auth_url.as_str()).expect("Failed to open browser");
-    run_local_server(csrf_token, client)
+    run_local_server(csrf_token, client, redirect_uri)
 }
 
 fn build_auth_client(
@@ -67,13 +58,25 @@ fn get_auth_url(basic_client: &BasicClient, scopes: Vec<&str>) -> (Url, CsrfToke
     (auth_url, csrf_token)
 }
 
-fn run_local_server(csrf_token: CsrfToken, client: BasicClient) -> Result<String> {
+fn run_local_server(
+    csrf_token: CsrfToken,
+    client: BasicClient,
+    redirect_uri: &str,
+) -> Result<String> {
     let (tx, mut rx) = broadcast::channel::<Option<String>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (token_tx, token_rx) = oneshot::channel();
-
+    let port = redirect_uri.split(":").collect::<Vec<&str>>()[2]
+        .split("/")
+        .collect::<Vec<&str>>()[0];
+    let redirect_route = redirect_uri.split(port).collect::<Vec<&str>>()[1];
+    let host_url = format!("localhost:{}", port);
+    // println!(
+    //     "port: {}, red : {}, host : {}",
+    //     port, redirect_route, host_url
+    // );
     let app = Router::new()
-        .route(REDIRECT_ROUTE, get(handle_google_callback))
+        .route(redirect_route, get(handle_google_callback))
         .with_state(AppState {
             state_token: csrf_token,
             client,
@@ -81,7 +84,7 @@ fn run_local_server(csrf_token: CsrfToken, client: BasicClient) -> Result<String
         });
 
     Runtime::new().unwrap().block_on(async {
-        let listener = tokio::net::TcpListener::bind(HOST_URL).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(host_url).await.unwrap();
         let server = axum::serve(listener, app).with_graceful_shutdown(async {
             shutdown_rx.await.ok();
         });
